@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 import cartopy.crs as ccrs
 from cartopy.io.img_tiles import OSM
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, render_template_string
 from flask_cors import CORS
 from openai import OpenAI
 import os
@@ -26,14 +26,10 @@ def askELM(input_text):
     )
     return completion.choices[0].message.content
 
-def create_app():
+app = Flask(__name__)
+CORS(app)
 
-    app = Flask(__name__)
-    CORS(app)
-
-    @app.route("/clean_coord", methods=["POST"])
-    def clean_coord(input_file):
-        input_file = request.args.get('DataFile')
+def clean_coord(input_file):
         Coord = {}
         Place = None
         Latcoord = []
@@ -58,12 +54,11 @@ def create_app():
                             continue
                     Coord[Place] = (Latcoord, Longcoord)
         except FileNotFoundError:
-            return jsonify({"error": "File not available"})
+            return ({"error": "File not available"})
 
-        return jsonify(Coord)
+        return (Coord)
     
-    @app.route("/calcuate_extent", methods=["GET", "POST"])
-    def calculate_extent(Coord):
+def calculate_extent(Coord):
         all_latitude = []
         all_longitude = []
         for latitudes, longitudes in Coord.values():
@@ -75,10 +70,9 @@ def create_app():
         min_longitude = min(all_longitude) - 0.01
         max_longitude = max(all_longitude) + 0.01
 
-        return jsonify[min_longitude, max_longitude, min_latitude, max_latitude]
+        return [min_longitude, max_longitude, min_latitude, max_latitude]
 
-    @app.route("/plot_map", methods=["GET", "POST"])
-    def plot_map(Coord, extent):
+def plot_map(Coord, extent):
         bng = ccrs.OSGB()
         map_image = OSM()
         fig = plt.figure(figsize=(15, 20))
@@ -104,8 +98,17 @@ def create_app():
         ax.set_title('Map')
         plt.show()
 
-    return app
+@app.route("/")
+def create_map():
+    input_file = 'DataFile'
+    Coord = clean_coord(input_file)
+    if isinstance(Coord, dict) and "error" in Coord:
+        return jsonify(Coord), 404
+
+    extent = calculate_extent(Coord)
+    plot_map(Coord, extent)
+    return "Map has been created and displayed."
+    
 
 if __name__ == '__main__':
-    app = create_app()
     app.run(debug=True)
