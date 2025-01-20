@@ -1,0 +1,111 @@
+import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
+import cartopy.crs as ccrs
+from cartopy.io.img_tiles import OSM
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+from openai import OpenAI
+import os
+
+client = OpenAI(
+    api_key=os.environ.get("OPEN_API_KEY"),
+)
+
+def askELM(input_text):
+    completion = client.chat.completions.create(
+        messages=[
+            {"role": "system",
+             "content": "You are a map generation service"
+             },
+             {
+                 "role":"user",
+                 "content":str(input_text),
+             }
+        ],
+        model="gpt-4-turbo",
+    )
+    return completion.choices[0].message.content
+
+def create_app():
+
+    app = Flask(__name__)
+    CORS(app)
+
+    @app.route("/clean_coord", methods=["GET", "POST"])
+    def clean_coord(input_file):
+        input_file = request.args.get('DataFile')
+        Coord = {}
+        Place = None
+        Latcoord = []
+        Longcoord = []
+
+        try:
+            with open(input_file, 'r') as file:
+                for line in file:
+                    line = line.strip()
+                    if not any(char.isdigit() for char in line):
+                        Place = line.strip()
+                        Latcoord = []
+                        Longcoord = []
+                    elif line:
+                        line = line.replace('°', '').replace('N', '').replace('W', '').replace('S', '').replace('E', '')
+                        try:
+                            Lat, Long = map(float, line.split())
+                            Long = -Long
+                            Latcoord.append(Lat)
+                            Longcoord.append(Long)
+                        except ValueError:
+                            continue
+                    Coord[Place] = (Latcoord, Longcoord)
+        except FileNotFoundError:
+            return jsonify({"error": "File not available"})
+
+        return jsonify(Coord)
+    
+    @app.route("/calcuate_extent", methods=["GET", "POST"])
+    def calculate_extent(Coord):
+        all_latitude = []
+        all_longitude = []
+        for latitudes, longitudes in Coord.values():
+            all_latitude.extend(latitudes)
+            all_longitude.extend(longitudes)
+
+        min_latitude = min(all_latitude) - 0.01
+        max_latitude = max(all_latitude) + 0.01
+        min_longitude = min(all_longitude) - 0.01
+        max_longitude = max(all_longitude) + 0.01
+
+        return jsonify[min_longitude, max_longitude, min_latitude, max_latitude]
+
+    @app.route("/plot_map", methods=["GET", "POST"])
+    def plot_map(Coord, extent):
+        bng = ccrs.OSGB()
+        map_image = OSM()
+        fig = plt.figure(figsize=(15, 20))
+        ax = fig.add_subplot(1, 1, 1, projection=bng)
+
+        ax.set_extent(extent, crs=ccrs.PlateCarree())
+        ax.add_image(map_image, 14, alpha=0.6)
+        
+        map_colour = plt.cm.get_cmap('tab20', len(Coord))
+        legend_names = []
+
+        for index, (location, (latitudes, longitudes)) in enumerate(Coord.items()):
+            colour = map_colour(index)
+            
+            for latitude, longitude in zip(latitudes, longitudes):
+                ax.plot(longitude, latitude, 'o', transform=ccrs.PlateCarree(), color=colour, markersize=10)
+            
+            legend_names.append(Patch(facecolor=colour, edgecolor='black', label=f'{index + 1} = {location.strip()}'))
+        
+        ax.legend(handles=legend_names, title='Areas', loc='lower center', handleheight=1, framealpha=0.8, 
+                fontsize='xx-small', ncol=1, bbox_to_anchor=(0.5, -0.1))
+        
+        ax.set_title('Map')
+        plt.show()
+
+    return app
+
+if __name__ == '__main__':
+    app = create_app()
+    app.run(debug=True)
