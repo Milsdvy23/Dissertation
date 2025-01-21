@@ -1,0 +1,177 @@
+import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
+import cartopy.crs as ccrs
+from cartopy.io.img_tiles import OSM
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+from openai import OpenAI
+import os
+
+# retrieving the API Key from another file to enhance security 
+client = OpenAI(
+    api_key=os.environ.get("OPEN_API_KEY"),
+)
+
+# ELM Function
+def askELM(input_text):
+    completion = client.chat.completions.create(
+        messages=[
+            {"role": "system",
+             "content": "You are a map generation service ,based on user stating location, for the University of Edinburgh using Scottish Gazetteer Data."
+             },
+             {
+                 "role":"user",
+                 "content":str(input_text),
+             }
+        ],
+        model="gpt-4-turbo",
+    )
+    return completion.choices[0].message.content
+
+app = Flask(__name__)
+CORS(app)
+
+# function to clean coordinates
+def clean_coord(input_file):
+        Coord = {}
+        Place = None
+        Latcoord = []
+        Longcoord = []
+
+        try:
+            with open(input_file, 'r') as file:
+                
+                for line in file:
+                    # strip of white space
+                    line = line.strip()
+                    # if a character is not a digit
+                    if not any(char.isdigit() for char in line):
+                        # strip of white space
+                        Place = line.strip()
+                        # make sure list is empty to enable multiple coordinates being plotted
+                        Latcoord = []
+                        Longcoord = []
+                    # if line
+                    elif line:
+                        # replace all extra coordinate characters so coordinates can be read by cartopy
+                        line = line.replace('°', '').replace('N', '').replace('W', '').replace('S', '').replace('E', '')
+                        try:
+                            # splits line and turns into float
+                            Lat, Long = map(float, line.split())
+                            # accomodates for western hemisphere values as this function creates Scottish maps
+                            Long = -Long
+                            # appends coordinates to lists
+                            Latcoord.append(Lat)
+                            Longcoord.append(Long)
+                        except ValueError:
+                            continue
+                    # adds to dictionary as 'PlaceName: Coordinate Data'
+                    Coord[Place] = (Latcoord, Longcoord)
+        except FileNotFoundError:
+            return ({"error": "File not available"})
+
+        return (Coord)
+
+# function to dynamically calcuate the extent of the given coordinates 
+def calculate_extent(Coord):
+        all_latitude = []
+        all_longitude = []
+        for latitudes, longitudes in Coord.values():
+            all_latitude.extend(latitudes)
+            all_longitude.extend(longitudes)
+
+        min_latitude = min(all_latitude) - 0.01
+        max_latitude = max(all_latitude) + 0.01
+        min_longitude = min(all_longitude) - 0.01
+        max_longitude = max(all_longitude) + 0.01
+
+        return [min_longitude, max_longitude, min_latitude, max_latitude]
+
+# function to plot the map using cartopy
+def plot_map(Coord, extent):
+    
+        # making sure it is in the British Coordinate System
+        bng = ccrs.OSGB()
+        
+        # Using OSM Base Layer
+        map_image = OSM()
+        
+        # setting figure size
+        fig = plt.figure(figsize=(15, 20))
+        
+        ax = fig.add_subplot(1, 1, 1, projection=bng)
+        ax.set_extent(extent, crs=ccrs.PlateCarree())
+        ax.add_image(map_image, 14, alpha=0.6)
+        
+        # setting map colour
+        map_colour = plt.cm.get_cmap('tab20', len(Coord))
+        legend_names = []
+        
+        # for every location and associated latitude and longitude set a colour
+        for index, (location, (latitudes, longitudes)) in enumerate(Coord.items()):
+            colour = map_colour(index)
+            
+            # setting marker size and plotting markers
+            for latitude, longitude in zip(latitudes, longitudes):
+                ax.plot(longitude, latitude, 'o', transform=ccrs.PlateCarree(), color=colour, markersize=10)
+            
+            # setting legend names based on location provided
+            legend_names.append(Patch(facecolor=colour, edgecolor='black', label=f'{index + 1} = {location.strip()}'))
+        
+        # formatting legend
+        ax.legend(handles=legend_names, title='Areas', loc='lower center', handleheight=1, framealpha=0.8, 
+                fontsize='xx-small', ncol=1, bbox_to_anchor=(0.5, -0.1))
+        
+        # setting title
+        ax.set_title('Map')
+        
+        # plotting map
+        plt.show()
+
+# creating a flask app
+@app.route("/chat", methods=["GET"])
+
+# function to activate all the previous functions and incorporate AI interface
+def create_map():
+    
+     try:
+        user_id = request.args.get('user_id', default='none')
+        prompt = request.args.get('prompt', default='')
+        response = AskELM(prompt)
+        input_file = 'DataFile'
+        Coord = clean_coord(input_file)
+        extent = calculate_extent(Coord)
+        
+        # if user_id does not exist
+        if (user_id == 'none'):
+             return {
+                            "response": "ERROR",
+                            "message": 'missing user_id'
+                            }, 400
+                           
+        # if nothing is typed in            
+        if (prompt == ''):
+            return { "response": "ERROR",
+                            "message": 'you did not ask anything'
+                            }, 400              
+                            
+        # if there is an error in the coordinates                             
+        if isinstance(Coord, dict) and "error" in Coord:
+                return jsonify(Coord), 404
+                
+        return {
+            'sender':'chatbot',
+            # returns a response and plots the map based off given coordinates
+            'text':str(response, plot_map(Coord, extent)),
+        
+            }
+            
+     except Exception as e:
+                  return {
+                        "response": "ERROR",
+                        "message": str(e)
+                  }, 500   
+    
+
+if __name__ == '__main__':
+    app.run(debug=True)
