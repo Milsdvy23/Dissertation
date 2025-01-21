@@ -138,8 +138,7 @@ def create_map():
         user_id = request.args.get('user_id', default='none')
         prompt = request.args.get('prompt', default='')
         response = AskELM(prompt)
-        input_file = 'DataFile'
-        Coord = clean_coord(input_file)
+        Coord = clean_coord('DataFile')
         extent = calculate_extent(Coord)
         
         # if user_id does not exist
