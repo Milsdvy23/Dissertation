@@ -158,11 +158,18 @@ def create_map():
         # if there is an error in the coordinates                             
         if isinstance(Coord, dict) and "error" in Coord:
                 return jsonify(Coord), 404
+            
+        if "create a map" in prompt.lower():
+            plot_map(Coord, extent)
+            return {
+                'sender': 'chatbot',
+                'text': response + " The map has been created."
+            }
                 
         return {
             'sender':'chatbot',
             # returns a response and plots the map based off given coordinates
-            'text':str(response, plot_map(Coord, extent)),
+            'text':str(response + "If you would like to create a map, please type: 'create a map' ")
         
             }
             
