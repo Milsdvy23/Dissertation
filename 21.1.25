@@ -175,7 +175,7 @@ def create_map():
             plot_map(Coord, extent)
             return {
                 'sender': 'chatbot',
-                'text': response + " The map has been created."
+                'text': str(response + " The map has been created.")
             }
                 
         return {
