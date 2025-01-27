@@ -1,0 +1,244 @@
+import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
+import cartopy.crs as ccrs
+from cartopy.io.img_tiles import OSM
+from flask import Flask, jsonify, request, render_template_string
+from flask_cors import CORS
+from openai import OpenAI
+import os
+
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+import time
+import json
+
+def selenium(place_name, output_path='coordinates.json'):
+
+    url = 'https://www.scottish-places.info/anyword.html'
+    options = webdriver.ChromeOptions()
+    #options.add_argument('--headless')
+
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    
+    driver.get(url)
+
+    search_box = WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.NAME, 'NAME'))
+        )
+    search_box.send_keys(place_name)
+
+    submit_button = WebDriverWait(driver, 20).until(
+            EC.element_to_be_clickable((By.XPATH, "//input[@type='submit' and @value='Search']"))
+        )
+    submit_button.click()
+
+    place_link = WebDriverWait(driver, 20).until(
+            EC.element_to_be_clickable((By.XPATH, f"//a[contains(@href, '/parishes/') and contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{place_name.lower()}')]"))
+        )
+    
+    place_link.click()
+
+    more_details_icon = WebDriverWait(driver, 20).until(
+            EC.element_to_be_clickable((By.XPATH, "//img[@title='More Details']"))
+        )
+    more_details_icon.click()
+
+    latitude = WebDriverWait(driver, 20).until(
+    EC.presence_of_element_located((By.XPATH, "//td[@class='left_text']/b[contains(text(), '°N') or contains(text(), '°S')]"))
+).text.strip()
+
+    longitude = WebDriverWait(driver, 20).until(
+    EC.presence_of_element_located((By.XPATH, "//td[@class='left_text']/b[contains(text(), '°E') or contains(text(), '°W')]"))
+).text.strip()
+    
+        # Save to JSON
+    data = {'latitude': latitude, 'longitude': longitude}
+    print(json.dumps(data, indent=4))
+    #with open(output_path, 'w') as jsonfile:
+            
+
+    driver.quit()
+
+
+client = OpenAI(
+    api_key=os.environ.get("OPEN_API_KEY"),
+)
+    
+# ELM Function
+def askELM(input_text):
+    completion = client.chat.completions.create(
+        messages=[
+            {"role": "system",
+             "content": "You are a map generation service."
+             },
+             {
+                 "role":"user",
+                 "content":str(input_text),
+             }
+        ],
+        model="gpt-4-turbo",
+    )
+    return completion.choices[0].message.content
+
+# function to clean coordinates
+def clean_coord(data):
+    try:
+        # Handle latitude
+        latitude = float(data['latitude'].replace('°N', '').replace('°S', '').strip())
+        if '°S' in data['latitude']:
+            latitude *= -1
+        
+        # Handle longitude
+        longitude = float(data['longitude'].replace('°E', '').replace('°W', '').strip())
+        if '°W' in data['longitude']:
+            longitude *= -1
+        
+        return {'place': ([latitude], [longitude])}
+    except ValueError as e:
+        print(f"Coordinate parsing error: {e}")
+        return {"error": "Invalid coordinate format"}
+
+# function to dynamically calcuate the extent of the given coordinates 
+def calculate_extent(Coord):
+        all_latitude = []
+        all_longitude = []
+        for latitudes, longitudes in Coord.values():
+            all_latitude.extend(latitudes)
+            all_longitude.extend(longitudes)
+
+        min_latitude = min(all_latitude) - 0.01
+        max_latitude = max(all_latitude) + 0.01
+        min_longitude = min(all_longitude) - 0.01
+        max_longitude = max(all_longitude) + 0.01
+
+        return [min_longitude, max_longitude, min_latitude, max_latitude]
+
+# function to plot the map using cartopy
+def plot_map(Coord, extent):
+    
+        # making sure it is in the British Coordinate System
+        bng = ccrs.OSGB()
+        
+        # Using OSM Base Layer
+        map_image = OSM()
+        
+        # setting figure size
+        fig = plt.figure(figsize=(15, 20))
+        
+        ax = fig.add_subplot(1, 1, 1, projection=bng)
+        ax.set_extent(extent, crs=ccrs.PlateCarree())
+        ax.add_image(map_image, 14, alpha=0.6)
+        
+        # setting map colour
+        map_colour = plt.cm.get_cmap('tab20', len(Coord))
+        legend_names = []
+        
+        # for every location and associated latitude and longitude set a colour
+        for index, (location, (latitudes, longitudes)) in enumerate(Coord.items()):
+            colour = map_colour(index)
+            
+            # setting marker size and plotting markers
+            for latitude, longitude in zip(latitudes, longitudes):
+                ax.plot(longitude, latitude, 'o', transform=ccrs.PlateCarree(), color=colour, markersize=10)
+            
+            # setting legend names based on location provided
+            legend_names.append(Patch(facecolor=colour, edgecolor='black', label=f'{index + 1} = {location.strip()}'))
+        
+        # formatting legend
+        ax.legend(handles=legend_names, title='Areas', loc='lower center', handleheight=1, framealpha=0.8, 
+                fontsize='xx-small', ncol=1, bbox_to_anchor=(0.5, -0.1))
+        
+        # setting title
+        ax.set_title('Map')
+        
+        # plotting map
+        plt.show()
+
+# function to activate all the previous functions and incorporate AI interface
+def create_app():
+    app = Flask(__name__)
+    CORS(app)
+
+    @app.route("/", methods=["GET"])
+    def home():
+        html_content = """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta http-equiv="X-UA-Compatible" content="IE=edge">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Map Request Form</title>
+        </head>
+        <body>
+            <h1>Request a Map</h1>
+            <form action="/chat" method="post">
+                <br><br>
+                <label for="prompt">Prompt:</label>
+                <input type="text" id="prompt" name="prompt" required>
+                <br><br>
+                <button type="submit">Submit</button>
+            </form>
+        </body>
+        </html>
+        """
+        return render_template_string(html_content)
+        
+    
+    @app.route("/chat", methods=["POST"])
+    def create_map():
+        try:
+            prompt = prompt = request.form.get('prompt', '')
+            response = askELM(prompt)
+
+            if prompt == '':
+                return {
+                    "response": "ERROR",
+                    "message": 'you did not ask anything'
+                }, 400
+            
+            place_name = prompt.lower().replace("create a map of", "").strip()
+            selenium(place_name)
+
+            with open('coordinates.json', 'r') as jsonfile:
+                selenium_data = json.load(jsonfile)
+
+            Coord = clean_coord(selenium_data)
+
+            if isinstance(Coord, dict) and "error" in Coord:
+                return jsonify(Coord), 404
+            
+            Coord = {place_name: Coord['place']}
+
+            if Coord:
+                extent = calculate_extent(Coord)
+                plot_map(Coord, extent)
+
+                os.remove('coordinates.json')
+
+                return {
+                    'sender': 'chatbot',
+                    'text': f"{response} The map for {place_name} has been created.",
+                }
+            else:
+                return {
+                    'sender': 'chatbot',
+                    'text': f"{response} Place not found. Please specify a valid location."
+                }
+                
+        except Exception as e:
+            return {
+                "response": "ERROR",
+                "message": str(e)
+            }, 500
+
+    return app
+
+if __name__ == '__main__':
+    app = create_app()
+    app.run(debug=True)
