@@ -1,0 +1,194 @@
+import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
+import cartopy.crs as ccrs
+from cartopy.io.img_tiles import Stamen
+from cartopy.io.img_tiles import OSM
+from flask import Flask, jsonify, request, render_template_string
+from flask_cors import CORS
+from openai import OpenAI
+import os
+
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+import time
+import json
+
+def selenium(place_name, keyword, output_path='coordinates.json'):
+    url = 'https://www.scottish-places.info/anyword.html'
+    options = webdriver.ChromeOptions()
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    driver.get(url)
+
+    search_box = WebDriverWait(driver, 20).until(
+        EC.presence_of_element_located((By.NAME, 'NAME'))
+    )
+    search_box.send_keys(place_name)
+
+    submit_button = WebDriverWait(driver, 20).until(
+        EC.element_to_be_clickable((By.XPATH, "//input[@type='submit' and @value='Search']"))
+    )
+    submit_button.click()
+
+    place_link = WebDriverWait(driver, 20).until(
+        EC.element_to_be_clickable((By.XPATH, f"//a[contains(@href, '/towns/') and contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{place_name.lower()}')]"))
+    )
+    place_link.click()
+
+    more_details_icon = WebDriverWait(driver, 20).until(
+        EC.element_to_be_clickable((By.XPATH, "//img[@title='More Details']"))
+    )
+    more_details_icon.click()
+
+    latitude = WebDriverWait(driver, 20).until(
+        EC.presence_of_element_located((By.XPATH, "//td[@class='left_text']/b[contains(text(), '°N') or contains(text(), '°S')]"))
+    ).text.strip()
+
+    longitude = WebDriverWait(driver, 20).until(
+        EC.presence_of_element_located((By.XPATH, "//td[@class='left_text']/b[contains(text(), '°E') or contains(text(), '°W')]"))
+    ).text.strip()
+
+    places = [{'place': place_name, 'latitude': latitude, 'longitude': longitude}]
+
+    if keyword:
+
+        keyword_links = driver.find_elements(By.XPATH, f"//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword.lower()}')]")
+
+        for link in keyword_links:
+            link_text = link.text
+            href = link.get_attribute('href')
+            
+            driver.get(href)
+            time.sleep(2)
+            
+            try:
+                more_details_icon = WebDriverWait(driver, 20).until(
+                    EC.element_to_be_clickable((By.XPATH, "//img[@title='More Details']"))
+                )
+                more_details_icon.click()
+
+                latitude_elem = WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located((By.XPATH, "//td[@class='left_text']/b[contains(text(), '°N') or contains(text(), '°S')]"))
+                )
+                
+                longitude_elem = WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located((By.XPATH, "//td[@class='left_text']/b[contains(text(), '°E') or contains(text(), '°W')]"))
+                )
+                
+                latitude = latitude_elem.text.strip()
+                longitude = longitude_elem.text.strip()
+
+                places.append({'place': link_text, 'latitude': latitude, 'longitude': longitude})
+
+            except Exception as e:
+                print(f"Unable to extract data from link '{link_text}': {e}")
+
+            finally:
+                driver.back()
+                driver.back()
+    
+            keyword_links = driver.find_elements(By.XPATH, f"//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword.lower()}')]")
+                        
+        driver.quit()
+
+    with open(output_path, 'w') as jsonfile:
+        json.dump(places, jsonfile, indent=4)
+
+    driver.quit()
+
+def clean_coord(data):
+    try:
+        
+        latitude = float(data['latitude'].replace('°N', '').replace('°S', '').strip())
+        if '°S' in data['latitude']:
+            latitude *= -1
+        
+        longitude = float(data['longitude'].replace('°E', '').replace('°W', '').strip())
+        if '°W' in data['longitude']:
+            longitude *= -1
+        
+        return {'place': ([latitude], [longitude])}
+    except ValueError as e:
+        print(f"Coordinate parsing error: {e}")
+        return {"error": "Invalid coordinate format"}
+    
+# function to dynamically calcuate the extent of the given coordinates 
+def calculate_extent(Coord):
+        all_latitude = []
+        all_longitude = []
+        for latitudes, longitudes in Coord.values():
+            all_latitude.extend(latitudes)
+            all_longitude.extend(longitudes)
+
+        min_latitude = min(all_latitude) - 0.01
+        max_latitude = max(all_latitude) + 0.01
+        min_longitude = min(all_longitude) - 0.01
+        max_longitude = max(all_longitude) + 0.01
+
+        return [min_longitude, max_longitude, min_latitude, max_latitude]
+    
+def plot_map(Coord, extent):
+    
+        # making sure it is in the British Coordinate System
+        bng = ccrs.OSGB()
+        
+        # Using OSM Base Layer
+        map_image = OSM()
+        
+        # setting figure size
+        fig = plt.figure(figsize=(10, 15))
+        
+        ax = fig.add_subplot(1, 1, 1, projection=bng)
+        ax.set_extent(extent, crs=ccrs.PlateCarree())
+        ax.add_image(map_image, 8, alpha=0.6)
+        
+        # setting map colour
+        map_colour = plt.cm.get_cmap('tab20', len(Coord))
+        legend_names = []
+        
+        # for every location and associated latitude and longitude set a colour
+        for index, (location, (latitudes, longitudes)) in enumerate(Coord.items()):
+            colour = map_colour(index)
+            
+            # setting marker size and plotting markers
+            for latitude, longitude in zip(latitudes, longitudes):
+                ax.plot(longitude, latitude, 'o', transform=ccrs.PlateCarree(), color=colour, markersize=10)
+            
+            # setting legend names based on location provided
+            legend_names.append(Patch(facecolor=colour, edgecolor='black', label=f'{index + 1} = {location.strip()}'))
+        
+        # formatting legend
+        ax.legend(handles=legend_names, title='Areas', loc='lower center', handleheight=1, framealpha=0.8, 
+                fontsize='xx-small', ncol=1, bbox_to_anchor=(0.5, -0.1))
+        
+        # setting title
+        ax.set_title('Map')
+        
+        # plotting map
+        plt.show()
+    
+if __name__ == '__main__':
+    place_name = 'Edinburgh'
+    keyword = 'school'
+    output_path = 'coordinates.json'
+    selenium(place_name, keyword)
+
+    # Reading and processing JSON data
+    with open(output_path, 'r') as jsonfile:
+        data = json.load(jsonfile)
+
+    Coord = {}
+    for entry in data:
+        cleaned = clean_coord(entry)
+        if "error" not in cleaned:
+            Coord[entry['place']] = cleaned['place']
+
+    if Coord:
+        extent = calculate_extent(Coord)
+        plot_map(Coord, extent)
+    else:
+        print("No valid coordinates found.")
