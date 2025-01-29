@@ -192,38 +192,7 @@ def plot_map(Coord, extent):
         # plotting map
         plt.show()
 
-# function to activate all the previous functions and incorporate AI interface
 def create_app():
-    app = Flask(__name__)
-    CORS(app)
-
-    @app.route("/", methods=["GET"])
-    def home():
-        html_content = """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta http-equiv="X-UA-Compatible" content="IE=edge">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Map Request Form</title>
-        </head>
-        <body>
-            <h1>Request a Map</h1>
-            <form action="/chat" method="post">
-                <br><br>
-                <label for="prompt">Prompt:</label>
-                <input type="text" id="prompt" name="prompt" required>
-                <br><br>
-                <button type="submit">Submit</button>
-            </form>
-        </body>
-        </html>
-        """
-        return render_template_string(html_content)
-
-    @app.route("/chat", methods=["POST"])
-    def create_app():
     app = Flask(__name__)
     CORS(app)
 
